@@ -578,6 +578,22 @@ object CustomGameScanner {
     }
 
     /**
+     * Moves a custom game off the primary volume's public root into the app sandbox. Only folders
+     * that carry a stored id in their .gamenative file are moved, since otherwise the id is derived
+     * from the folder path and the game would lose its container.
+     */
+    fun migrateFromPublicRoot(folderPath: String?): String? {
+        if (folderPath.isNullOrBlank()) return folderPath
+        if (!StorageUtils.isPrimaryEmulatedVolume(folderPath)) return folderPath
+        if (GameMetadataManager.getAppId(File(folderPath)) == null) return folderPath
+        val appDir = DownloadService.baseExternalAppDirPath
+        if (appDir.isEmpty()) return folderPath
+        val moved = StorageUtils.migratePublicPrimaryDir(folderPath, File(appDir))
+        if (moved != folderPath) invalidateCache()
+        return moved
+    }
+
+    /**
      * Whether [folderPath] is inside an app-managed CustomGames root and therefore ours to
      * delete when the game is removed, unlike folders mapped in place.
      */

@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import android.os.storage.StorageManager
+import app.gamenative.service.DownloadService
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -125,16 +126,70 @@ object StorageUtils {
 
     private const val PUBLIC_INSTALL_DIR_NAME = "GameNative"
 
+    private const val PRIMARY_EMULATED_PREFIX = "/storage/emulated/"
+
+    fun isPrimaryEmulatedVolume(path: String): Boolean = path.startsWith(PRIMARY_EMULATED_PREFIX)
+
     /**
      * Maps an app-specific dir (<volume>/Android/data/<pkg>/files) to a public install root
      * (<volume>/GameNative). MediaProvider disables FUSE kernel caching under Android/data,
      * making per-open metadata ops ~1000x slower there; public dirs get normal dcache treatment.
+     * The primary emulated volume is excluded: its public paths go through the MediaProvider
+     * daemon, which aborts when wine walks a game folder and leaves /storage returning ENOTCONN,
+     * while the app sandbox on that volume is served by kernel passthrough instead.
      */
     fun publicInstallRoot(appFilesDir: File): File? {
         val path = appFilesDir.absolutePath
         val idx = path.indexOf("/Android/data/")
         if (idx <= 0) return null
-        return File(path.substring(0, idx), PUBLIC_INSTALL_DIR_NAME)
+        val volume = path.substring(0, idx)
+        if (isPrimaryEmulatedVolume(volume)) return null
+        return File(volume, PUBLIC_INSTALL_DIR_NAME)
+    }
+
+    /** Path of the form /storage/emulated/<n>/GameNative, with no trailing components. */
+    fun isPrimaryPublicInstallRoot(path: String): Boolean {
+        val trimmed = path.trimEnd('/')
+        if (!isPrimaryEmulatedVolume(trimmed)) return false
+        val parent = File(trimmed).parent ?: return false
+        return File(trimmed).name == PUBLIC_INSTALL_DIR_NAME && parent.count { it == '/' } == 3
+    }
+
+    private fun primaryPublicRelativePath(path: String): String? {
+        if (!isPrimaryEmulatedVolume(path)) return null
+        val marker = "/$PUBLIC_INSTALL_DIR_NAME/"
+        val idx = path.indexOf(marker)
+        if (idx <= 0) return null
+        if (path.substring(0, idx).count { it == '/' } != 3) return null
+        return path.substring(idx + marker.length).ifEmpty { null }
+    }
+
+    fun sandboxInstallRoot(): File? =
+        DownloadService.baseExternalAppDirPath.takeIf { it.isNotEmpty() }?.let { File(it, "files") }
+
+    /**
+     * Moves a directory under /storage/emulated/<n>/GameNative back into [sandboxRoot], keeping
+     * the same relative layout, and returns its new path. Returns [path] unchanged when it is
+     * not on the primary public root or when the move is not possible.
+     */
+    fun migratePublicPrimaryDir(path: String?, sandboxRoot: File?): String? {
+        if (path.isNullOrBlank() || sandboxRoot == null) return path
+        val rel = primaryPublicRelativePath(path) ?: return path
+        val src = File(path)
+        val dst = File(sandboxRoot, rel)
+        if (!src.isDirectory) return if (dst.isDirectory) dst.absolutePath else path
+        if (dst.exists()) {
+            Timber.w("Cannot migrate $path; ${dst.absolutePath} already exists")
+            return path
+        }
+        dst.parentFile?.mkdirs()
+        return if (src.renameTo(dst)) {
+            Timber.i("Migrated game dir $path to ${dst.absolutePath}")
+            dst.absolutePath
+        } else {
+            Timber.w("Could not migrate $path; leaving in place")
+            path
+        }
     }
 
     fun ensureInstallRoot(dir: File): Boolean {
@@ -151,6 +206,7 @@ object StorageUtils {
 
     fun resolveLegacyGameDir(path: String?): String? {
         if (path.isNullOrBlank()) return path
+        if (isPrimaryEmulatedVolume(path)) return migratePublicPrimaryDir(path, sandboxInstallRoot())
         val idx = path.indexOf("/Android/data/")
         if (idx <= 0) return path
         val filesIdx = path.indexOf("/files/", idx)

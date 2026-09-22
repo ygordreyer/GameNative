@@ -1064,10 +1064,13 @@ object ContainerUtils {
             }
         }
 
-        val resolvedGameFolderPath = if (gameSource == GameSource.CUSTOM_GAME) {
-            gameFolderPath
-        } else {
-            StorageUtils.resolveLegacyGameDir(gameFolderPath)
+        val isImportedSteamApp = gameSource == GameSource.STEAM &&
+            runCatching { SteamService.getInstalledApp(extractGameIdFromContainerId(appId))?.isImported }.getOrNull() == true
+
+        val resolvedGameFolderPath = when {
+            gameSource == GameSource.CUSTOM_GAME -> CustomGameScanner.migrateFromPublicRoot(gameFolderPath)
+            isImportedSteamApp -> gameFolderPath
+            else -> StorageUtils.resolveLegacyGameDir(gameFolderPath)
         }
 
         if (resolvedGameFolderPath != null && resolvedGameFolderPath != gameFolderPath) {

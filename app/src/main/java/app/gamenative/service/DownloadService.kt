@@ -53,7 +53,14 @@ object DownloadService {
     // caching there); repoint the install pref at the public root so new installs avoid it
     private fun migrateExternalStoragePath() {
         val pref = PrefManager.externalStoragePath
-        if (pref.isBlank() || !pref.contains("/Android/data/")) return
+        if (pref.isBlank()) return
+        if (StorageUtils.isPrimaryPublicInstallRoot(pref)) {
+            val sandbox = StorageUtils.sandboxInstallRoot() ?: return
+            Timber.i("Moving external install root from $pref back to ${sandbox.absolutePath}")
+            PrefManager.externalStoragePath = sandbox.absolutePath
+            return
+        }
+        if (!pref.contains("/Android/data/")) return
         val public = StorageUtils.publicInstallRoot(File(pref)) ?: return
         if (StorageUtils.ensureInstallRoot(public)) {
             Timber.i("Migrating external install root from $pref to ${public.absolutePath}")
